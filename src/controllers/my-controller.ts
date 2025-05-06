@@ -33,8 +33,7 @@ export const myController = fastifyPlugin(async server => {
 					},
 				},
 			}))!;
-		console.log(order);
-		const ids: number[] = [request.params.orderId];
+			
 		const {products: productList} = order;
 
 		if (productList) {

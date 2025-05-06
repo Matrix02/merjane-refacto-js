@@ -21,6 +21,8 @@ describe('MyController Integration Tests', () => {
 	let fastify: FastifyInstance;
 	let database: Database;
 	let notificationServiceMock: DeepMockProxy<INotificationService>;
+	const d = 24 * 60 * 60 * 1000;
+
 
 	beforeEach(async () => {
 		notificationServiceMock = mockDeep<INotificationService>();
@@ -35,7 +37,7 @@ describe('MyController Integration Tests', () => {
 	afterEach(async () => {
 		await fastify.close();
 	});
-
+	
 	it('ProcessOrderShouldReturn', async () => {
 		const client = supertest(fastify.server);
 		const allProducts = createProducts();
@@ -52,8 +54,65 @@ describe('MyController Integration Tests', () => {
 		expect(resultOrder!.id).toBe(orderId);
 	});
 
+	it('Notify client when product is expired', async () => {
+		const client = supertest(fastify.server);
+		const expirationDate = new Date(Date.now() - (2 * d))
+		const allProducts = [
+			{
+				leadTime: 90, available: 6, type: 'EXPIRABLE', name: 'Milk', expiryDate: expirationDate,
+			},
+		];
+		const orderId = await database.transaction(async tx => {
+			const productList = await tx.insert(products).values(allProducts).returning({productId: products.id});
+			const [order] = await tx.insert(orders).values([{}]).returning({orderId: orders.id});
+			await tx.insert(ordersToProducts).values(productList.map(p => ({orderId: order!.orderId, productId: p.productId})));
+			return order!.orderId;
+		});
+
+		await client.post(`/orders/${orderId}/processOrder`).expect(200).expect('Content-Type', /application\/json/);
+
+		expect(notificationServiceMock.sendExpirationNotification).toHaveBeenCalledWith('Milk', expirationDate);
+	});
+
+	it('Notify client when product is not available', async () => {
+		const client = supertest(fastify.server);
+		const allProducts = [
+			{
+				leadTime: 10, available: 0, type: 'NORMAL', name: 'USB Dongle',
+			},
+		];
+		const orderId = await database.transaction(async tx => {
+			const productList = await tx.insert(products).values(allProducts).returning({productId: products.id});
+			const [order] = await tx.insert(orders).values([{}]).returning({orderId: orders.id});
+			await tx.insert(ordersToProducts).values(productList.map(p => ({orderId: order!.orderId, productId: p.productId})));
+			return order!.orderId;
+		});
+
+		await client.post(`/orders/${orderId}/processOrder`).expect(200).expect('Content-Type', /application\/json/);
+
+		expect(notificationServiceMock.sendDelayNotification).toHaveBeenCalledWith(10, 'USB Dongle');
+	});
+
+	it('Notify client about seasonal product has passed', async () => {
+		const client = supertest(fastify.server);
+		const allProducts = [
+			{
+				leadTime: 15, available: 30, type: 'SEASONAL', name: 'Grapes', seasonStartDate: new Date(Date.now() + (180 * d)), seasonEndDate: new Date(Date.now() + (240 * d)),
+			},
+		];
+		const orderId = await database.transaction(async tx => {
+			const productList = await tx.insert(products).values(allProducts).returning({productId: products.id});
+			const [order] = await tx.insert(orders).values([{}]).returning({orderId: orders.id});
+			await tx.insert(ordersToProducts).values(productList.map(p => ({orderId: order!.orderId, productId: p.productId})));
+			return order!.orderId;
+		});
+
+		await client.post(`/orders/${orderId}/processOrder`).expect(200).expect('Content-Type', /application\/json/);
+
+		expect(notificationServiceMock.sendOutOfStockNotification).toHaveBeenCalledWith('Grapes');
+	});
+
 	function createProducts(): ProductInsert[] {
-		const d = 24 * 60 * 60 * 1000;
 		return [
 			{
 				leadTime: 15, available: 30, type: 'NORMAL', name: 'USB Cable',
